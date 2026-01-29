@@ -1,17 +1,22 @@
 import numpy as np
-from sklearn.datasets import load_iris
+from sklearn.datasets import fetch_openml
 from sklearn.model_selection import train_test_split
 
 def load_data():
     """
-    Load the Iris dataset and return the features and target values.
+    Load the Titanic dataset and return the features and target values.
     Returns:
-        X (numpy.ndarray): The features of the Iris dataset.
-        y (numpy.ndarray): The target values of the Iris dataset.
+        X (numpy.ndarray): The features of the Titanic dataset.
+        y (numpy.ndarray): The target values of the Titanic dataset.
     """
-    iris = load_iris()
-    X = iris.data
-    y = iris.target
+    titanic = fetch_openml('titanic', version=1, as_frame=True)
+    df = titanic.frame.copy()
+    df['age'] = df['age'].fillna(df['age'].median())
+    df['fare'] = df['fare'].fillna(df['fare'].median())
+    df['sex'] = df['sex'].map({'male': 0, 'female': 1})
+    features = ['pclass', 'sex', 'age', 'sibsp', 'parch', 'fare']
+    X = df[features].values.astype(float)
+    y = (df['survived'] == '1').astype(int).values
     return X, y
 
 def split_data(X, y):

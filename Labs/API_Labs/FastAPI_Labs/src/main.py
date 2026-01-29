@@ -2,34 +2,36 @@ from fastapi import FastAPI, status, HTTPException
 from pydantic import BaseModel
 from predict import predict_data
 
-
 app = FastAPI()
 
-class IrisData(BaseModel):
-    petal_length: float
-    sepal_length: float
-    petal_width: float
-    sepal_width: float
+class TitanicData(BaseModel):
+    pclass: int
+    sex: int# 0 for male and 1 for female
+    age: float
+    sibsp: int
+    parch: int
+    fare: float
 
-class IrisResponse(BaseModel):
+class TitanicResponse(BaseModel):
     response:int
 
 @app.get("/", status_code=status.HTTP_200_OK)
 async def health_ping():
     return {"status": "healthy"}
 
-@app.post("/predict", response_model=IrisResponse)
-async def predict_iris(iris_features: IrisData):
+@app.post("/predict", response_model=TitanicResponse)
+async def predict_survival(passenger: TitanicData):
     try:
-        features = [[iris_features.sepal_length, iris_features.sepal_width,
-                    iris_features.petal_length, iris_features.petal_width]]
-
+        features = [[
+            passenger.pclass,
+            passenger.sex,
+            passenger.age,
+            passenger.sibsp,
+            passenger.parch,
+            passenger.fare
+        ]]
         prediction = predict_data(features)
-        return IrisResponse(response=int(prediction[0]))
+        return TitanicResponse(response=int(prediction[0]))
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-
-
-    
