@@ -1,0 +1,8 @@
+stages:
+  preprocess:
+    cmd: python scripts/preprocess.py
+    deps:
+      - data/CC_GENERAL.csv
+      - scripts/preprocess.py
+    outs:
+      - data/processed.csv

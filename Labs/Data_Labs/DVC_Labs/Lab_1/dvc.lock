@@ -1,0 +1,18 @@
+schema: '2.0'
+stages:
+  preprocess:
+    cmd: python scripts/preprocess.py
+    deps:
+    - path: data/CC_GENERAL.csv
+      hash: md5
+      md5: c9b0bb7fc9e241b81da92c3528103664
+      size: 902879
+    - path: scripts/preprocess.py
+      hash: md5
+      md5: fbcfaf276ae4ca424f0f8d674ec482d0
+      size: 204
+    outs:
+    - path: data/processed.csv
+      hash: md5
+      md5: badc297a139e51106eeda63e9b1312ae
+      size: 990981
