@@ -5,8 +5,8 @@ stages:
     deps:
     - path: data/CC_GENERAL.csv
       hash: md5
-      md5: c9b0bb7fc9e241b81da92c3528103664
-      size: 902879
+      md5: 1e50f7d531b29e8c28cd1d43d8b5f2a8
+      size: 1031504
     - path: scripts/preprocess.py
       hash: md5
       md5: fbcfaf276ae4ca424f0f8d674ec482d0
@@ -14,5 +14,5 @@ stages:
     outs:
     - path: data/processed.csv
       hash: md5
-      md5: badc297a139e51106eeda63e9b1312ae
-      size: 990981
+      md5: 2135f6fa142871eeb0346f26bf166c3e
+      size: 1001931
