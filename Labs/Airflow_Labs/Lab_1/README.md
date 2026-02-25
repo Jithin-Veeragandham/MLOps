@@ -30,7 +30,8 @@ cd MLOps/Labs/Airflow_Labs/Lab_1
 echo -e "AIRFLOW_UID=50000\n" > .env # setup env with airflow uid
 ```
 
-### 2. Start Airflow
+### 2. Start Airflow 
+Make sure Docker desktop is running and then:
 
 ```powershell
 docker compose up airflow-init
