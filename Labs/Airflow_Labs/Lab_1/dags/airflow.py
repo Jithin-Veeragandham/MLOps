@@ -1,9 +1,10 @@
 # Import necessary libraries and modules
 from airflow import DAG
 # from airflow.operators.python import PythonOperator
-from airflow.providers.standard.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
-from src.lab import load_data, data_preprocessing, build_save_model, load_model_elbow
+from src.lab import load_data, data_preprocessing, build_save_model, load_model_evaluate
+# Dataset: Iris (auto-downloaded if not found in data/)
 
 # NOTE:
 # In Airflow 3.x, enabling XCom pickling should be done via environment variable:
@@ -22,7 +23,7 @@ default_args = {
 with DAG(
     'Airflow_Lab1',
     default_args=default_args,
-    description='Dag example for Lab 1 of Airflow series',
+    description='Wine quality classification with Optuna-tuned RandomForest',
     catchup=False,
 ) as dag:
 
@@ -39,17 +40,17 @@ with DAG(
         op_args=[load_data_task.output],
     )
 
-    # Task to build and save a model, depends on 'data_preprocessing_task'
+    # Task to build and save a model using Optuna hyperparameter tuning
     build_save_model_task = PythonOperator(
         task_id='build_save_model_task',
         python_callable=build_save_model,
         op_args=[data_preprocessing_task.output, "model.sav"],
     )
 
-    # Task to load a model using the 'load_model_elbow' function, depends on 'build_save_model_task'
+    # Task to load the best model and evaluate on test data
     load_model_task = PythonOperator(
         task_id='load_model_task',
-        python_callable=load_model_elbow,
+        python_callable=load_model_evaluate,
         op_args=["model.sav", build_save_model_task.output],
     )
 

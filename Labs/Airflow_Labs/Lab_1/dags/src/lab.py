@@ -1,88 +1,135 @@
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.cluster import KMeans
-from kneed import KneeLocator
+import numpy as np
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+import optuna
 import pickle
 import os
 import base64
 
+
 def load_data():
     """
-    Loads data from a CSV file, serializes it, and returns the serialized data.
-    Returns:
-        str: Base64-encoded serialized data (JSON-safe).
+    Checks if train/test CSVs exist in ../data/. If not, downloads Iris
+    and splits into train/test. Returns base64-encoded serialized train data.
     """
-    print("We are here")
-    df = pd.read_csv(os.path.join(os.path.dirname(__file__), "../data/file.csv"))
-    serialized_data = pickle.dumps(df)                    # bytes
-    return base64.b64encode(serialized_data).decode("ascii")  # JSON-safe string
+    data_dir = os.path.join(os.path.dirname(__file__), "../data")
+    train_path = os.path.join(data_dir, "file.csv")
+    test_path = os.path.join(data_dir, "test.csv")
+
+    if os.path.exists(train_path) and os.path.exists(test_path):
+        print("Data files found, loading from disk...")
+        df_train = pd.read_csv(train_path)
+    else:
+        print("Data files not found, downloading Iris dataset...")
+        os.makedirs(data_dir, exist_ok=True)
+        iris = load_iris(as_frame=True)
+        df = iris.frame  # columns: sepal length/width, petal length/width, target
+        df_train, df_test = train_test_split(df, test_size=0.2, random_state=42, stratify=df["target"])
+        df_train.to_csv(train_path, index=False)
+        df_test.to_csv(test_path, index=False)
+        print(f"Saved train ({len(df_train)}) and test ({len(df_test)}) to {data_dir}")
+
+    serialized_data = pickle.dumps(df_train)
+    return base64.b64encode(serialized_data).decode("ascii")
+
 
 def data_preprocessing(data_b64: str):
     """
     Deserializes base64-encoded pickled data, performs preprocessing,
-    and returns base64-encoded pickled clustered data.
+    and returns base64-encoded pickled feature/target arrays.
     """
-    # decode -> bytes -> DataFrame
     data_bytes = base64.b64decode(data_b64)
     df = pickle.loads(data_bytes)
-
     df = df.dropna()
-    clustering_data = df[["BALANCE", "PURCHASES", "CREDIT_LIMIT"]]
 
-    min_max_scaler = MinMaxScaler()
-    clustering_data_minmax = min_max_scaler.fit_transform(clustering_data)
+    X = df.drop("target", axis=1)
+    y = df["target"]
 
-    # bytes -> base64 string for XCom
-    clustering_serialized_data = pickle.dumps(clustering_data_minmax)
-    return base64.b64encode(clustering_serialized_data).decode("ascii")
+    payload = {"X_train": X.values, "y_train": y.values}
+    serialized_data = pickle.dumps(payload)
+    return base64.b64encode(serialized_data).decode("ascii")
 
 
 def build_save_model(data_b64: str, filename: str):
     """
-    Builds a KMeans model on the preprocessed data and saves it.
-    Returns the SSE list (JSON-serializable).
+    Uses Optuna to tune RandomForest hyperparameters via cross-validation.
+    Saves the best model. Returns trial results (JSON-serializable).
     """
-    # decode -> bytes -> numpy array
     data_bytes = base64.b64decode(data_b64)
-    df = pickle.loads(data_bytes)
+    payload = pickle.loads(data_bytes)
 
-    kmeans_kwargs = {"init": "random", "n_init": 10, "max_iter": 300, "random_state": 42}
-    sse = []
-    for k in range(1, 50):
-        kmeans = KMeans(n_clusters=k, **kmeans_kwargs)
-        kmeans.fit(df)
-        sse.append(kmeans.inertia_)
+    X_train = payload["X_train"]
+    y_train = payload["y_train"]
 
-    # NOTE: This saves the last-fitted model (k=49), matching your original intent.
+    def objective(trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 10, 300),
+            "max_depth": trial.suggest_int("max_depth", 2, 15),
+            "min_samples_split": trial.suggest_int("min_samples_split", 2, 10),
+            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 8),
+            "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", None]),
+            "random_state": 42,
+        }
+        rf = RandomForestClassifier(**params)
+        # 5-fold cross-validation on training data
+        from sklearn.model_selection import cross_val_score
+        scores = cross_val_score(rf, X_train, y_train, cv=5, scoring="accuracy")
+        return scores.mean()
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=50)
+
+    # Retrain best model on full training data and save
+    best_rf = RandomForestClassifier(**study.best_params, random_state=42)
+    best_rf.fit(X_train, y_train)
+
     output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "model")
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, filename)
-    with open(output_path, "wb") as f:
-        pickle.dump(kmeans, f)
+    with open(os.path.join(output_dir, filename), "wb") as f:
+        pickle.dump(best_rf, f)
 
-    return sse  # list is JSON-safe
+    trials = [
+        {"number": t.number, "accuracy": round(t.value, 4), "params": t.params}
+        for t in study.trials
+    ]
+    return trials
 
 
-def load_model_elbow(filename: str, sse: list):
+def load_model_evaluate(filename: str, trials: list):
     """
-    Loads the saved model and uses the elbow method to report k.
-    Returns the first prediction (as a plain int) for test.csv.
+    Loads the best saved model, evaluates on test.csv,
+    prints and saves classification report. Returns first prediction as int.
     """
-    # load the saved (last-fitted) model
     output_path = os.path.join(os.path.dirname(__file__), "../model", filename)
     loaded_model = pickle.load(open(output_path, "rb"))
 
-    # elbow for information/logging
-    kl = KneeLocator(range(1, 50), sse, curve="convex", direction="decreasing")
-    print(f"Optimal no. of clusters: {kl.elbow}")
+    # Log best trial
+    best = max(trials, key=lambda t: t["accuracy"])
+    print(f"Best trial #{best['number']}: CV accuracy={best['accuracy']}")
+    print(f"Best params: {best['params']}")
 
-    # predict on raw test data (matches your original code)
-    df = pd.read_csv(os.path.join(os.path.dirname(__file__), "../data/test.csv"))
-    pred = loaded_model.predict(df)[0]
+    # Load and preprocess test data (same scaling)
+    df_test = pd.read_csv(os.path.join(os.path.dirname(__file__), "../data/test.csv"))
+    X_test = df_test.drop("target", axis=1)
+    y_test = df_test["target"]
 
-    # ensure JSON-safe return
+    preds = loaded_model.predict(X_test)
+
+    # Generate and save classification report
+    report = classification_report(y_test, preds, target_names=["setosa", "versicolor", "virginica"])
+    print(f"\nClassification Report:\n{report}")
+
+    report_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "model")
+    report_path = os.path.join(report_dir, "classification_report.txt")
+    with open(report_path, "w") as f:
+        f.write(report)
+    print(f"Report saved to {report_path}")
+
+    pred = preds[0]
     try:
         return int(pred)
     except Exception:
-        # if not numeric, still return a JSON-friendly version
         return pred.item() if hasattr(pred, "item") else pred
