@@ -42,7 +42,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-docker-compose.yaml
+
 *.sav
 logs/
 working_data/
@@ -183,3 +183,4 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .DS_Store
+Labs/Data_Labs/DVC_Labs/Lab_1/00008140-0012703C3410801C.plist
