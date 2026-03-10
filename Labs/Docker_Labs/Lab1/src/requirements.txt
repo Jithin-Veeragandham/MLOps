@@ -1,2 +1,7 @@
 scikit-learn
 joblib
+pandas
+numpy
+matplotlib
+fastapi
+uvicorn

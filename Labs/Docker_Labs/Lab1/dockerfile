@@ -10,5 +10,11 @@ COPY src/ .
 # Install Scikit-Learn and joblib
 RUN pip install -r requirements.txt
 
-# Run the script when the container launches
-CMD ["python", "main.py"]
+# Expose FastAPI default port
+EXPOSE 8000
+
+# Train the model at build time so it's ready to serve
+RUN python main.py
+
+# Launch the FastAPI server when the container starts
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
