@@ -5,7 +5,7 @@ from google.cloud import storage
 
 # Initialize Publisher client and topic path
 publisher = pubsub_v1.PublisherClient()
-topic_path = publisher.topic_path('PROJECT_ID', 'model-training-trigger') # Replace with Project_ID
+topic_path = publisher.topic_path('testing-488212', 'model-training-trigger')
 
 
 storage_client = storage.Client()

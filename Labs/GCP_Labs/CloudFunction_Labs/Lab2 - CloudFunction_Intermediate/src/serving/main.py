@@ -1,4 +1,5 @@
 import joblib
+import os
 from google.cloud import storage
 import numpy as np
 import json
@@ -9,7 +10,7 @@ def load_model():
     global model
     if model is None:
         storage_client = storage.Client()
-        bucket = storage_client.bucket('BUCKET_NAME')
+        bucket = storage_client.bucket(os.environ.get('BUCKET_NAME', 'mlops-labs-jithin'))
         blob = bucket.blob('model.pkl')
         blob.download_to_filename('/tmp/model.pkl')
         model = joblib.load('/tmp/model.pkl')

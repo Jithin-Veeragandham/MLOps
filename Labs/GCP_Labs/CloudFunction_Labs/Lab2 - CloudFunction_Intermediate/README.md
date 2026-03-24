@@ -1,144 +1,339 @@
 # Building a Serverless Machine Learning Pipeline with Google Cloud Functions
 
-
-In this lab we will walk through the process of building a serverless machine learning pipeline using Google Cloud Functions, Pub/Sub, and Workflows and deploying individual functions for data processing, model training, and prediction, orchestrating them into a seamless pipeline. 
-
+In this lab we will walk through the process of building a serverless machine learning pipeline using Google Cloud Functions, Pub/Sub, and Workflows and deploying individual functions for data processing, model training, model evaluation, and prediction, orchestrating them into a seamless pipeline.
 
 ---
 
-## Step 1: Enable Required APIs
-To use Cloud Functions, Pub/Sub, Workflows, and Cloud Storage in this project, enable the corresponding APIs. 
-Run the following command to enable them:
+## Changes Made in This Lab
 
-```bash
-gcloud services enable \
-    cloudfunctions.googleapis.com \
-    pubsub.googleapis.com \
-    workflows.googleapis.com \
-    storage.googleapis.com \
-    monitoring.googleapis.com
+- Added a new **Model Evaluation** function that loads the trained model from GCS, evaluates it on a held-out test set, and routes the pipeline based on whether accuracy meets the threshold
+- Added a new **Notification** function that sends email alerts via SendGrid with the model's evaluation results — success or failure
+
+---
+
+## Deployment Screenshots
+
+### Cloud Run Functions Deployed
+![Cloud Run Functions Deployed](res/Cloud%20Run%20Functions%20Deployed.png)
+
+### Pub/Sub Topics
+![Pub/Sub Topics](res/pubsub_topics.png)
+
+### Email Alert from Model Evaluation
+![Alert from Model Evaluation](res/Alert%20from%20Model%20Evaluation.png)
+
+### Inference Example
+![Inference Example](res/Inference%20Example.png)
+
+---
+
+## Prerequisites
+- Google Cloud SDK installed
+- PowerShell (Windows)
+- Active GCP project with billing enabled
+- All commands below use PowerShell syntax (backtick `` ` `` for line continuation)
+
+---
+
+## Step 1: Authenticate and Configure GCP
+
+**Login to GCP:**
+```powershell
+gcloud auth login
 ```
+This opens a browser — sign in with your Google account.
+
+**Set your project:**
+```powershell
+gcloud config set project testing-488212
+```
+
+**Verify config:**
+```powershell
+gcloud config list
+```
+
 ---
-## Step 2: Create Pub/Sub Topics for Pipeline Stages
-We will use Pub/Sub topics to manage communication between various pipeline stages. 
 
-### What are Pub/Sub Topics?
-Google Cloud Pub/Sub is a messaging service that allows for asynchronous communication between applications by 
-decoupling the sender (publisher) and the receiver (subscriber) of messages. 
+## Step 2: Enable Required APIs
 
-In this model:
-- **Publishers** send messages to a topic.
-- **Subscribers** receive those messages from the topic.
+```powershell
+gcloud services enable cloudfunctions.googleapis.com pubsub.googleapis.com workflows.googleapis.com storage.googleapis.com monitoring.googleapis.com secretmanager.googleapis.com
+```
 
-Each message published to a topic is automatically sent to all subscribers of that topic, enabling efficient communication across distributed services.
+---
 
-### **Why are Pub/Sub Topics Used in This Lab?**
+## Step 3: Create a Cloud Storage Bucket
 
-1. **Decoupling Services**: By using Pub/Sub, the pipeline stages (data processing, model training, and model serving) are decoupled from one another. Each stage runs independently and can scale according to the workload without directly relying on the previous or next stage.
-   
-2. **Reliability**: Pub/Sub provides message durability and ensures reliable delivery, meaning that even if one of the pipeline stages is temporarily unavailable, the messages will be delivered once the service is ready again.
+Create the bucket in `us-central1` to match the function region:
 
-3. **Scalability**: As Pub/Sub handles the communication between pipeline stages, it allows each stage to scale independently based on incoming messages. For example, if a large amount of data is processed, multiple instances of the model training function can be triggered simultaneously.
+```powershell
+gcloud storage buckets create gs://mlops-labs-jithin --location=us-central1
+```
 
-4. **Asynchronous Processing**: The pipeline stages do not have to wait for one another to complete before starting the next stage. For example, the data processing function can trigger the model training stage once it finishes processing, without needing to wait for the model training to finish before other data processing tasks continue.
+> **Note:** Make sure the bucket region matches the function region or you will get a trigger location mismatch error on deploy.
 
+---
 
+## Step 4: Create Pub/Sub Topics for Pipeline Stages
 
-- **`data-processing-trigger`**: This topic triggers the data processing function when new data is available in the Cloud Storage bucket.
-- **`model-training-trigger`**: This topic triggers the model training function once data processing is complete and the system is ready to train the model.
-- **`model-serving-trigger`**: This topic triggers the model serving function to make predictions after the model has been successfully trained.
+- **`data-processing-trigger`**: Triggers data processing when new data is uploaded.
+- **`model-training-trigger`**: Triggers model training once data processing is complete.
+- **`model-evaluation-trigger`**: Triggers model evaluation once training is complete.
+- **`model-serving-trigger`**: Triggers model serving only after the model passes evaluation.
+- **`pipeline-notifications`**: Triggers email notifications on pipeline completion or failure.
 
-Create the following Pub/Sub topics:
-
-```bash
+```powershell
 gcloud pubsub topics create data-processing-trigger
 gcloud pubsub topics create model-training-trigger
+gcloud pubsub topics create model-evaluation-trigger
 gcloud pubsub topics create model-serving-trigger
+gcloud pubsub topics create pipeline-notifications
 ```
+
 ---
-## Step 3: Deploy Cloud Functions for Pipeline Stages
-We will create and deploy three Cloud Functions: one for data processing, one for model training, and one for model serving (prediction).
 
-### 3.1 Data Processing Function
- 
-The function is triggered by a Cloud Storage event, which passes details about the newly uploaded file in the `event` object. This includes the bucket name and the file name, which the function uses to retrieve the uploaded data.
-The function does not directly trigger the next pipeline stage. Instead, it publishes a message to a Pub/Sub topic, allowing the system to remain decoupled and scalable.
+## Step 5: Set Up Email Notifications via SendGrid
 
- Deploy the function as follows:
-``` bash
-gcloud functions deploy process_data \
-    --runtime python310 \
-    --trigger-resource YOUR_BUCKET_NAME \
-    --trigger-event google.storage.object.finalize \
+### 5.1 Create a SendGrid Account
+1. Go to [sendgrid.com](https://sendgrid.com) and sign up for a free account (100 emails/day free tier)
+2. After signing in, go to **Settings → API Keys**
+3. Click **Create API Key**, give it a name like `mlops-notify`, and select **Restricted Access**
+4. Under **Mail Send**, set permission to **Full Access**
+5. Click **Create & View** and copy the API key — you won't see it again
+
+### 5.2 Verify a Sender Email
+1. Go to **Settings → Sender Authentication**
+2. Click **Verify a Single Sender**
+3. Fill in your details using the email you want to send alerts from (e.g., `jithinv.mlop@gmail.com`)
+4. Check your inbox and click the verification link SendGrid sends you
+
+### 5.3 Store the API Key in Secret Manager
+
+Secret Manager API should already be enabled from Step 2. Create the secret and add your key:
+
+```powershell
+gcloud secrets create sendgrid-api-key --replication-policy="automatic"
+```
+
+```powershell
+echo "YOUR_SENDGRID_API_KEY" | gcloud secrets versions add sendgrid-api-key --data-file=-
+```
+
+Then grant the default compute service account access to read it:
+
+```powershell
+$PROJECT_NUMBER = (gcloud projects describe (gcloud config get-value project) --format="value(projectNumber)")
+gcloud secrets add-iam-policy-binding sendgrid-api-key `
+    --member="serviceAccount:$PROJECT_NUMBER-compute@developer.gserviceaccount.com" `
+    --role="roles/secretmanager.secretAccessor"
+```
+
+> **Note:** Without this IAM binding the `notify` function will fail to deploy with a `Permission denied on secret` error.
+
+---
+
+## Step 6: Deploy Cloud Functions
+
+### 6.0 Grant GCS Service Account Pub/Sub Publisher Role
+
+Before deploying the data processing function, the GCS service account needs permission to publish to Pub/Sub topics. This is required for the Cloud Storage trigger to work with gen2 functions.
+
+**Get the GCS service account email:**
+```powershell
+gcloud storage service-agent --project=testing-488212
+```
+
+**Grant it the Pub/Sub Publisher role:**
+```powershell
+gcloud projects add-iam-policy-binding testing-488212 `
+    --member="serviceAccount:service-915704685236@gs-project-accounts.iam.gserviceaccount.com" `
+    --role="roles/pubsub.publisher"
+```
+
+> **Note:** If you skip this step you will get a `permission denied` error when deploying the data processing function.
+
+### 6.1 Data Processing Function
+
+```powershell
+cd src/data_processing
+```
+
+```powershell
+gcloud functions deploy process_data `
+    --runtime python310 `
+    --trigger-resource mlops-labs-jithin `
+    --trigger-event google.storage.object.finalize `
     --region us-central1
 ```
-Replace YOUR_BUCKET_NAME with the name of the Cloud Storage bucket.
 
-### 3.2 Model Training Function
-The function is triggered by a Pub/Sub message that contains the file name of the dataset to be used for training. The message is encoded in base64, so the first step is to decode the message and extract the file name from the message data.
-It retrieves the file from a specified Cloud Storage bucket using the `bucket` and `blob` objects.
-It uploads the model file to the Cloud Storage bucket, making it accessible for the next stages of the pipeline, such as model serving (prediction).
+### 6.2 Model Training Function
 
-```bash
-gcloud functions deploy train_model \
-    --runtime python310 \
-    --trigger-topic model-training-trigger \
-    --region us-central1 \
-    --entry-point train_model \
-    --timeout 540s \
+> **Note:** The training function publishes to `model-evaluation-trigger` upon completion rather than directly to `model-serving-trigger`.
+
+```powershell
+cd src/training
+```
+
+```powershell
+gcloud functions deploy train_model `
+    --runtime python310 `
+    --trigger-topic model-training-trigger `
+    --region us-central1 `
+    --entry-point train_model `
+    --timeout 540s `
     --memory 512MB
 ```
-### 3.3 Model Serving (Prediction) Function
-The `predict` function is responsible for serving predictions based on a pre-trained machine learning model. It handles HTTP requests, processes input data, and returns model predictions.
-```bash
-gcloud functions deploy ml_model_predict \
-    --runtime python310 \
-    --trigger-http \
-    --allow-unauthenticated \
-    --region us-central1 \
-    --entry-point predict \
-    --timeout 60s \
-    --memory 256MB
+
+### 6.3 Model Evaluation Function 
+
+Loads the trained model from GCS, evaluates it against a held-out test set, and routes accordingly:
+- **Pass** → publishes to `model-serving-trigger`
+- **Fail** → publishes to `pipeline-notifications` with a failure payload
+
+#### Deploy
+
+```powershell
+cd src/evaluation
 ```
+
+```powershell
+gcloud functions deploy evaluate_model `
+    --runtime python310 `
+    --trigger-topic model-evaluation-trigger `
+    --region us-central1 `
+    --entry-point evaluate_model `
+    --timeout 120s `
+    --memory 512MB `
+    --set-env-vars GCP_PROJECT=testing-488212,BUCKET_NAME=mlops-labs-jithin,ACCURACY_THRESHOLD=0.8
+```
+
+### 6.4 Model Serving (Prediction) Function
+
+```powershell
+cd src/serving
+```
+
+```powershell
+gcloud functions deploy ml_model_predict `
+    --runtime python310 `
+    --trigger-http `
+    --allow-unauthenticated `
+    --region us-central1 `
+    --entry-point predict `
+    --timeout 60s `
+    --memory 256MB `
+    --set-env-vars BUCKET_NAME=mlops-labs-jithin
+```
+
+> **Note:** The `BUCKET_NAME` env var must be set — the original source code had a literal `'BUCKET_NAME'` placeholder that caused a 400 error on first deploy.
+
+### 6.5 Notification Function
+
+Triggered by any message on `pipeline-notifications`. Sends an email alert via SendGrid with the pipeline status, stage, and reason.
+
+#### Deploy
+
+```powershell
+cd src/notification
+```
+
+```powershell
+gcloud functions deploy notify `
+    --runtime python310 `
+    --trigger-topic pipeline-notifications `
+    --region us-central1 `
+    --entry-point notify `
+    --timeout 30s `
+    --memory 256MB `
+    --set-env-vars ALERT_EMAIL=YOUR_ALERT_EMAIL,SENDER_EMAIL=YOUR_VERIFIED_SENDER_EMAIL `
+    --set-secrets SENDGRID_API_KEY=sendgrid-api-key:latest
+```
+
+> **Note:** Minimum memory for gen2 functions is 256MB — using 128MB will cause a deployment error.
+
+Replace:
+- `YOUR_ALERT_EMAIL` — the email address to receive alerts (e.g., `jithinveeragandham@gmail.com`)
+- `YOUR_VERIFIED_SENDER_EMAIL` — the email you verified in SendGrid Step 5.2 (must match the verified sender)
+
 ---
-## Step 4: Create the Workflow
-This workflow orchestrates the pipeline by coordinating the execution of the data processing, model training, and model prediction stages through HTTP requests to the corresponding Cloud Functions.
 
-#### **1. Initiate Data Processing**
-The first step (`initiate-data-processing`) triggers the `process_data` Cloud Function via an HTTP POST request:
-- The request includes the `bucket` and `file` parameters to specify the Cloud Storage location where the data (`data.csv`) is stored.
-- This step initiates the data processing function, which will clean and process the data, then publish a message to start model training.
+## Step 7: Updated Pipeline Flow
 
-#### **2. Initiate Model Training**
-Once data processing is complete, the next step (`initiate-model-training`) triggers the `train_model` Cloud Function via another HTTP POST request:
-- The request sends the file name (`data.csv`) as input.
-- This step starts the training process using the processed data. The model is trained and then uploaded to Cloud Storage for future predictions.
-
-#### **3. Initiate Model Serving (Prediction)**
-After the model has been trained, the workflow moves to the model serving stage (`initiate-model-serving`) by calling the `ml_model_predict` function:
-- It sends the input features for which the prediction is requested.
-- The prediction function loads the pre-trained model from Cloud Storage and returns the prediction result.
-
-#### **4. Return the Prediction**
-The final step (`return_prediction`) captures the result from the model prediction step and returns it as the output of the workflow:
-- The prediction result is extracted from the `model_prediction` variable, which contains the response body of the `ml_model_predict` function.
-
-Deploy the workflow as follows:
-
-```bash
-gcloud workflows deploy mlops-workflow \
-    --source=workflow.yaml \
-    --location=us-central1
 ```
+GCS Upload
+    → process_data          (Storage trigger)
+    → train_model           (Pub/Sub: model-training-trigger)
+    → evaluate_model        (Pub/Sub: model-evaluation-trigger)
+        ├── PASS → notify [SUCCESS]   (Pub/Sub: pipeline-notifications)
+        │       → ml_model_predict   (Pub/Sub: model-serving-trigger)
+        └── FAIL → notify [FAILED]   (Pub/Sub: pipeline-notifications)
+```
+
 ---
 
-## Step 5: Test the Cloud Functions
-Once the pipeline is set up, test the Cloud Functions with a simple curl request to the prediction function. Replace YOUR_PROJECT_ID with your actual Google Cloud project ID.
+## Step 8: Upload Data and Trigger the Pipeline
 
-```bash
-curl -X POST https://us-central1-YOUR_PROJECT_ID.cloudfunctions.net/ml_model_predict \
-    -H "Content-Type: application/json" \
-    -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
+The `evaluate_model` function reads `data/test.csv` from GCS. Upload the test split **first**, then the training data — uploading training data triggers the pipeline, so the test split must already be in GCS before that happens.
+
+**Step 1 — Upload the test split** (run once from the repo root):
+```powershell
+python src/evaluation/upload_test_split.py
 ```
-This will send a request to the prediction function with an array of features. The function should return the predicted class.
 
+**Step 2 — Upload training data to trigger the pipeline:**
+```powershell
+gcloud storage cp data/data.csv gs://mlops-labs-jithin/data.csv
+```
+
+Check your inbox for a pipeline notification email. You can also inspect function logs:
+
+```powershell
+gcloud functions logs read evaluate_model --region us-central1
+gcloud functions logs read notify --region us-central1
+```
+
+---
+
+## Step 9: Test the Prediction Endpoint
+
+```powershell
+Invoke-WebRequest -Uri "https://us-central1-testing-488212.cloudfunctions.net/ml_model_predict" `
+    -Method POST `
+    -Headers @{"Content-Type"="application/json"} `
+    -Body '{"features": [5.1, 3.5, 1.4, 0.2]}' `
+    -UseBasicParsing
+```
+
+---
+
+## Deployed Function URLs
+
+All functions deployed to project `testing-488212`, region `us-central1` as **gen2**:
+
+| Function | Trigger | URL |
+|---|---|---|
+| `process_data` | GCS bucket `mlops-labs-jithin` (object finalize) | https://us-central1-testing-488212.cloudfunctions.net/process_data |
+| `train_model` | Pub/Sub: `model-training-trigger` | https://us-central1-testing-488212.cloudfunctions.net/train_model |
+| `evaluate_model` | Pub/Sub: `model-evaluation-trigger` | https://us-central1-testing-488212.cloudfunctions.net/evaluate_model |
+| `ml_model_predict` | HTTP (public) | https://us-central1-testing-488212.cloudfunctions.net/ml_model_predict |
+| `notify` | Pub/Sub: `pipeline-notifications` | https://us-central1-testing-488212.cloudfunctions.net/notify |
+
+---
+
+## Pipeline Run Results
+
+Successfully executed 2026-03-24:
+
+```
+data.csv uploaded → process_data triggered
+  └─ Published to model-training-trigger
+       └─ train_model: Model trained and saved to GCS as model.pkl
+            └─ Published to model-evaluation-trigger
+                 └─ evaluate_model: accuracy=1.0000 ≥ threshold=0.8 → PASSED
+                      └─ Published to model-serving-trigger
+
+Prediction test:
+  POST /ml_model_predict {"features": [5.1, 3.5, 1.4, 0.2]}
+  → {"prediction": ["setosa"]}  ✓
+```
