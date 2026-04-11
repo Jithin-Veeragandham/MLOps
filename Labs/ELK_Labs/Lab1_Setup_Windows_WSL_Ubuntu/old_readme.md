@@ -178,7 +178,3 @@ Then run this:
 ```bash
 bin/logstash -e 'input{stdin{}} output{stdout{}}'
 ```
-
-
-
-
